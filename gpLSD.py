@@ -1,8 +1,9 @@
 import numpy as np
 import matplotlib.pyplot as pl
 import scipy.optimize as opt
-from DIRECT import solve
+from scipydirect import minimize
 import scipy.sparse as sp
+
 
 try:
 	import seaborn as sn
@@ -33,7 +34,7 @@ class gpLSD:
 		"""
 		This class implements the Bayesian LSD using a Gaussian Process prior
 
-		Input 
+		Input
 		-----
 		velocities: vector of size nv with the velocity bins in which all lines are sampled
 		noise: array of size nl giving the standard deviation of the noise for each line (nl)
@@ -44,14 +45,14 @@ class gpLSD:
 		"""
 		self.epsilon = 1e-8
 		self.alpha = alpha
-		self.v = velocities		
+		self.v = velocities
 		self.variance = noise**2
 		self.beta = 1.0 / self.variance
 		self.nLambda = len(velocities)
 		self.nLines = len(alpha)
 		self.linesObserved = linesObserved
 		self.K = np.zeros((self.nLambda,self.nLambda))
-						
+
 		sparseData = []
 		sparseRow = []
 		sparseCol = []
@@ -60,58 +61,58 @@ class gpLSD:
 				sparseRow.append(i*self.nLines+j)
 				sparseCol.append(i)
 				sparseData.append(alpha[j])
-				
+
 		self.W = sp.coo_matrix((sparseData, (sparseRow, sparseCol)), shape=(self.nLines*self.nLambda,self.nLambda))
-		
-		
-		self.AInvDiag = (np.ones(self.nLambda)[:,None] * self.beta).reshape(self.nLines*self.nLambda)		
-		print "Computing inverse variance matrix"
-		self.AInv = sp.diags(self.AInvDiag, 0)		
-		print "Computing determinant of noise matrix"
+
+
+		self.AInvDiag = (np.ones(self.nLambda)[:,None] * self.beta).reshape(self.nLines*self.nLambda)
+		print("Computing inverse variance matrix")
+		self.AInv = sp.diags(self.AInvDiag, 0)
+		print("Computing determinant of noise matrix")
 		self.logA = -np.sum(np.log(self.AInvDiag))	# We use a -1 because we are working with the inverse variance
-		print "Precomputing product W^T*V*A^-1*W"		
+		print("Precomputing product W^T*V*A^-1*W")
 		self.WTAInvW = self.W.T.dot(self.AInv.dot(self.W)).toarray()
-		print "Precomputing product Q = OBS^T * diag(1/sigma^2) * OBS"
-		self.Q = self.linesObserved.T.dot(self.AInv.dot(self.linesObserved))		
-		print "Precomputing product P=W^T * diag(1/sigma^2) * OBS"		
-		self.P = self.W.T.dot(self.AInv.dot(self.linesObserved))		
-		print "Precomputing W^T*Obs"
+		print("Precomputing product Q = OBS^T * diag(1/sigma^2) * OBS")
+		self.Q = self.linesObserved.T.dot(self.AInv.dot(self.linesObserved))
+		print("Precomputing product P=W^T * diag(1/sigma^2) * OBS")
+		self.P = self.W.T.dot(self.AInv.dot(self.linesObserved))
+		print("Precomputing W^T*Obs")
 		self.WTAInvObs = self.W.T.dot(self.AInv.dot(self.linesObserved))
 		self.AInv = None
-		
+
 		if (covarianceFunction == 'squaredExponential'):
 			self.covariance = self.squaredExponential
 		if (covarianceFunction == 'matern32'):
 			self.covariance = self.matern32
 		if (covarianceFunction == 'matern52'):
 			self.covariance = self.matern52
-		
-				
+
+
 	def squaredExponential(self, pars):
 		"""
 		Squared exponential covariance function
-		
+
 		Parameters
 		----------
 		pars : float
 		    array of size 2 with the hyperparameters of the kernel
-		
+
 		Returns
 		-------
 		x : kernel matrix of size nl x nl
 		"""
 		lambdaGP, sigmaGP = np.exp(pars)
 		return sigmaGP * np.exp(-0.5 * lambdaGP * (self.v[:,None]-self.v[None,:])**2)
-	
+
 	def matern32(self, pars):
 		"""
 		Matern nu=3/2 exponential covariance function
-		
+
 		Parameters
 		----------
 		pars : float
 		    array of size 2 with the hyperparameters of the kernel
-		
+
 		Returns
 		-------
 		x : kernel matrix of size nl x nl
@@ -120,16 +121,16 @@ class gpLSD:
 		r = np.abs(self.v[:,None]-self.v[None,:])
 		y = np.sqrt(3.0) * r / lambdaGP
 		return sigmaGP * (1.0 + y) * np.exp(-y)
-	
+
 	def matern52(self, pars):
 		"""
 		Matern nu=5/2 exponential covariance function
-		
+
 		Parameters
 		----------
 		pars : float
 		    array of size 2 with the hyperparameters of the kernel
-		
+
 		Returns
 		-------
 		x : kernel matrix of size nl x nl
@@ -138,17 +139,17 @@ class gpLSD:
 		r = np.abs(self.v[:,None]-self.v[None,:])
 		y = np.sqrt(5.0) * r / lambdaGP
 		return sigmaGP * (1.0 + y + y**2 / 3.0) * np.exp(-y)
-	
-				
+
+
 	def marginal(self, pars):
 		"""
 		Compute the marginal posterior for the hyperparameters
-		
+
 		Parameters
 		----------
 		pars : float array
 		    Value of the hyperparameters
-		
+
 		Returns
 		-------
 		logP : float
@@ -156,47 +157,46 @@ class gpLSD:
 
 		"""
 		K = self.covariance(pars)
-		
-# We apply the Woodbury matrix identity to write the inverse in terms of the inverse of smaller matrices				
+
+		# We apply the Woodbury matrix identity to write the inverse in terms of the inverse of smaller matrices
 		KInv, logK = cholInvert(K + self.epsilon * np.identity(self.nLambda))
-		
+
 		t = KInv + self.WTAInvW
 		tInv, logt = cholInvert(t)
-				
-# And use the matrix determinant lemma
+
+		# And use the matrix determinant lemma
 		logD = logt + logK + self.logA
-		
-		logMarginal = -0.5 * self.Q + 0.5 * np.dot(self.P.T, np.dot(tInv, self.P)) - 0.5 * logD		
+
+		logMarginal = -0.5 * self.Q + 0.5 * np.dot(self.P.T, np.dot(tInv, self.P)) - 0.5 * logD
 
 		return -logMarginal
-		
-	def _objDirect(self, x, user_data):
-		return self.marginal(x), 0
-	
+
 	def optimizeDirectGP(self):
 		"""
 		Optimize the hyperparameters of the GP using the DIRECT optimization method
-		
+
 		Returns
 		-------
 		x: array of float
 			Value of the optimal hyperpameters
 		"""
-		l = [0.05, np.log(np.min(self.variance) / self.nLines)]
-		u = [4.0, np.log(10.0*np.max(self.variance) / self.nLines)]
-		x, fmin, ierror = solve(self._objDirect, l, u, algmethod=1, maxf=300)
-		print 'Optimal lambdaGP={0}, sigmaGP={1} - loglambdaGP={2}, logsigmaGP={3} - logL={4}'.format(np.exp(x[0]), np.exp(x[1]), x[0], x[1], fmin)
+		bounds = [(0.05, 4.0),(np.log(np.min(self.variance) / self.nLines), np.log(10.0*np.max(self.variance) / self.nLines))]
+		res = minimize(self.marginal, bounds, algmethod=1, maxf=300)
+		x = res.x
+		fmin = res.fun
+		ierror = res.status
+		print('Optimal lambdaGP={0}, sigmaGP={1} - loglambdaGP={2}, logsigmaGP={3} - logL={4}'.format(np.exp(x[0]), np.exp(x[1]), x[0], x[1], fmin))
 		return x[0], x[1]
-		
+
 	def predict(self, pars):
 		"""
 		Prediction using the GP
-		
+
 		Parameters
 		----------
 		pars : array of float
 		    value of the hyperpameters
-		
+
 		Returns
 		-------
 		muZ: mean of the GP regression at each velocity bin
@@ -213,7 +213,7 @@ class gpLSD:
 	def computeLSD(self):
 		"""
 		Compute the standard LSD deconvolution
-		
+
 		Returns
 		-------
 		x: array of float with the LSD profile
@@ -223,11 +223,11 @@ class gpLSD:
 		for i in range(self.nLambda):
 			self.ZLSD[i] = np.sum(self.beta * linesMatrix[i,:] * self.alpha) / np.sum(self.beta * self.alpha**2)
 		return self.ZLSD
-		
+
 def plotResults(vel, Z, covarianceFunction, outFile=None):
 	"""
 	Plot the results using the Bayesian LSD and the standard LSD
-	
+
 	Parameters
 	----------
 	vel : float array
@@ -238,7 +238,7 @@ def plotResults(vel, Z, covarianceFunction, outFile=None):
 	    name of the output pdf file for the plots. Use None for no output
 	covarianceFunction : string
 	    covariance function option
-	
+
 	Returns
 	-------
 	None
@@ -251,7 +251,7 @@ def plotResults(vel, Z, covarianceFunction, outFile=None):
 
 	nLinesPartial = [10,50,100,2000]
 	for loop in range(len(nLinesPartial)):
-	# Generate the observations	
+	# Generate the observations
 		VObs = alpha[0:nLinesPartial[loop],None] * Z[None,:] + noise[0:nLinesPartial[loop],:]
 		VObsVector = np.zeros(nLinesPartial[loop]*nLambda)
 		loop2 = 0
@@ -259,7 +259,7 @@ def plotResults(vel, Z, covarianceFunction, outFile=None):
 			for j in range(nLinesPartial[loop]):
 				VObsVector[loop2] = alpha[j] * Z[i] + noise[j,i]
 				loop2 += 1
-							
+
 		gp = gpLSD(vel, np.ones(nLinesPartial[loop])*sigma, VObsVector, alpha[0:nLinesPartial[loop]], covarianceFunction=covarianceFunction)
 
 		# LSD deconvolution
@@ -267,10 +267,10 @@ def plotResults(vel, Z, covarianceFunction, outFile=None):
 
 		lambdaGP, sigmaGP = gp.optimizeDirectGP()
 		gpMean, gpVariance = gp.predict([lambdaGP, sigmaGP])
-		ax[loop].plot(vel,Z)	
+		ax[loop].plot(vel,Z)
 		ax[loop].fill_between(vel, gpMean-3.0*np.sqrt(gpVariance), gpMean+3.0*np.sqrt(gpVariance), alpha=0.2)
 		ax[loop].fill_between(vel, gpMean-2.0*np.sqrt(gpVariance), gpMean+2.0*np.sqrt(gpVariance), alpha=0.2)
-		ax[loop].fill_between(vel, gpMean-np.sqrt(gpVariance), gpMean+np.sqrt(gpVariance), alpha=0.2)	
+		ax[loop].fill_between(vel, gpMean-np.sqrt(gpVariance), gpMean+np.sqrt(gpVariance), alpha=0.2)
 		ax[loop].plot(vel,ZLSD)
 		ax[loop].plot(vel,gpMean)
 		ax[loop].set_ylabel('Stokes V')
@@ -305,9 +305,9 @@ if (__name__ == '__main__'):
 	# Example 1
 	Z = vel * np.exp(-vel**2)
 	Z = ZMax * Z / np.max(Z)
-	plotResults(vel, Z, 'matern32', None)
+	plotResults(vel, Z, 'matern32', 'test1.pdf')
 
 	# Example 2
 	Z = vel * np.exp(-vel**2) + 0.2 * vel * np.exp(-(vel-2.5)**2 / 0.5**2)
 	Z = ZMax * Z / np.max(Z)
-	plotResults(vel, Z, 'matern32', None)
+	plotResults(vel, Z, 'matern32', 'test2.pdf')
